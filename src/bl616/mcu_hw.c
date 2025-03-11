@@ -4,6 +4,8 @@
 
 #include <FreeRTOS.h>
 #include "mem.h"
+#include "shell.h"
+#include "semphr.h"
 
 #include "usbh_core.h"
 #include "usbh_hid.h"
@@ -59,6 +61,7 @@ static struct bflb_device_s *gpio;
 #define XINPUT_GAMEPAD_RIGHT_SHOULDER 0x0200
 
 extern struct bflb_device_s *gpio;
+extern void shell_init_with_task(struct bflb_device_s *shell);
 
 void set_led(int pin, int on) {
   // only M0S dock has those leds
@@ -706,7 +709,10 @@ void mcu_hw_init(void) {
   bflb_gpio_init(gpio, GPIO_PIN_2, GPIO_INPUT | GPIO_PULLDOWN | GPIO_SMT_EN | GPIO_DRV_0);
  
   mcu_hw_spi_init();
-  
+
+  uart0 = bflb_device_get_by_name("uart0");
+  shell_init_with_task(uart0);
+
   usb_host();
 }
 
@@ -730,3 +736,12 @@ void mcu_hw_main_loop(void) {
   
   for( ;; );
 }
+
+
+int shell_test(int argc, char **argv)
+{
+    printf("shell\r\n");
+    return 0;
+}
+SHELL_CMD_EXPORT_ALIAS(shell_test, test, shell test.);
+SHELL_CMD_EXPORT_ALIAS(lsusb, lsusb, ls usb);
