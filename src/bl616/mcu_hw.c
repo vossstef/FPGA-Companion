@@ -139,6 +139,7 @@ static void usbh_update(struct usb_config *usb) {
     char *dev_str = "/dev/inputX";
     dev_str[10] = '0' + i;
     usb->hid_info[i].class = (struct usbh_hid *)usbh_find_class_instance(dev_str);
+    uint8_t report_desc[128];
     
     if(usb->hid_info[i].class && usb->hid_info[i].state == STATE_NONE) {
       usb_debugf("NEW HID %d", i);
@@ -149,11 +150,10 @@ static void usbh_update(struct usb_config *usb) {
       usb_debugf("  class %d", usb->hid_info[i].class->hport->config.intf[i].altsetting[0].intf_desc.bInterfaceClass);
       usb_debugf("  subclass %d", usb->hid_info[i].class->hport->config.intf[i].altsetting[0].intf_desc.bInterfaceSubClass);
       usb_debugf("  protocol %d", usb->hid_info[i].class->hport->config.intf[i].altsetting[0].intf_desc.bInterfaceProtocol);
-	
-      // parse report descriptor ...
-      usb_debugf("report descriptor: %p", usb->hid_info[i].class->report_desc);
-      
-      if(!parse_report_descriptor(usb->hid_info[i].class->report_desc, 128, &usb->hid_info[i].report, NULL)) {
+      usbh_hid_get_report_descriptor(usb->hid_info[i].class, report_desc, sizeof(report_desc));
+        // parse report descriptor ...
+      usb_debugf("report descriptor: %p", report_desc);
+      if(!parse_report_descriptor(report_desc, sizeof(report_desc), &usb->hid_info[i].report, NULL)) {
 	usb->hid_info[i].state = STATE_FAILED;   // parsing failed, don't use
 	return;
       }
@@ -459,7 +459,8 @@ void usb_host(void) {
 
   usb_debugf("init usb hid host");
 
-  usbh_initialize();
+//  usbh_initialize();
+  usbh_initialize(0, USB_BASE);
   
   // initialize all HID info entries
   for(int i=0;i<CONFIG_USBHOST_MAX_HID_CLASS;i++) {
