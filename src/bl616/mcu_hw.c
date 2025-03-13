@@ -110,6 +110,7 @@ static struct usb_config {
   
 USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX uint8_t hid_buffer[CONFIG_USBHOST_MAX_HID_CLASS][MAX_REPORT_SIZE];
 USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX uint8_t xbox_buffer[CONFIG_USBHOST_MAX_XBOX_CLASS][XBOX_REPORT_SIZE];
+USB_NOCACHE_RAM_SECTION USB_MEM_ALIGNX uint8_t report_desc[CONFIG_USBHOST_MAX_HID_CLASS][128];
 
 uint8_t byteScaleAnalog(int16_t xbox_val)
 {
@@ -139,8 +140,7 @@ static void usbh_update(struct usb_config *usb) {
     char *dev_str = "/dev/inputX";
     dev_str[10] = '0' + i;
     usb->hid_info[i].class = (struct usbh_hid *)usbh_find_class_instance(dev_str);
-    uint8_t report_desc[128];
-    
+
     if(usb->hid_info[i].class && usb->hid_info[i].state == STATE_NONE) {
       usb_debugf("NEW HID %d", i);
 
@@ -150,10 +150,12 @@ static void usbh_update(struct usb_config *usb) {
       usb_debugf("  class %d", usb->hid_info[i].class->hport->config.intf[i].altsetting[0].intf_desc.bInterfaceClass);
       usb_debugf("  subclass %d", usb->hid_info[i].class->hport->config.intf[i].altsetting[0].intf_desc.bInterfaceSubClass);
       usb_debugf("  protocol %d", usb->hid_info[i].class->hport->config.intf[i].altsetting[0].intf_desc.bInterfaceProtocol);
-      usbh_hid_get_report_descriptor(usb->hid_info[i].class, report_desc, sizeof(report_desc));
-        // parse report descriptor ...
-      usb_debugf("report descriptor: %p", report_desc);
-      if(!parse_report_descriptor(report_desc, sizeof(report_desc), &usb->hid_info[i].report, NULL)) {
+      int rep_desc = usbh_hid_get_report_descriptor(usb->hid_info[i].class, report_desc[i], 128);
+      if (rep_desc < 0) {
+        usb_debugf("usbh_hid_get_report_descriptor issue");}
+      // parse report descriptor ...
+      usb_debugf("report descriptor: %p", report_desc[i]);
+      if(!parse_report_descriptor(report_desc[i], 128, &usb->hid_info[i].report, NULL)) {
 	usb->hid_info[i].state = STATE_FAILED;   // parsing failed, don't use
 	return;
       }
