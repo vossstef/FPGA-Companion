@@ -19,6 +19,8 @@
 
 extern uint32_t __HeapBase;
 extern uint32_t __HeapLimit;
+extern uint32_t __psram_heap_base;
+extern uint32_t __psram_limit;
 
 #include "bl616_glb.h"
 
@@ -50,7 +52,6 @@ extern uint32_t __HeapLimit;
 #include "wifi_mgmr.h"
 #include "bflb_irq.h"
 #include "rfparam_adapter.h"
-#include "board.h"
 
 #define DBG_TAG "MAIN"
 #include "log.h"
@@ -61,8 +62,13 @@ static wifi_conf_t conf = {
     .country_code = "DE",
 };
 
+#if (defined(CONFIG_LUA) || defined(CONFIG_BFLOG) || defined(CONFIG_FATFS))
+static struct bflb_device_s *rtc;
+#endif
+
 #define WIFI_STACK_SIZE  (1536)
 #define TASK_PRIORITY_FW (16)
+
 
 /* ============================================================================================= */
 /* ===============                          USB                                   ============== */
@@ -611,6 +617,7 @@ extern void log_start(void);
 extern void bl_show_flashinfo(void);
 extern void bl_show_log(void);
 extern void bflb_uart_set_console(struct bflb_device_s *dev);
+extern uint32_t board_psram_x8_init(void);
 
 // the M0S uses max bitrate as I use another M0S for console debug which can
 // deal with 2MBit/s
@@ -656,8 +663,52 @@ static void peripheral_clock_init(void) {
   
   GLB_Set_PKA_CLK_Sel(GLB_PKA_CLK_MCU_MUXPLL_160M);
   
+#ifdef CONFIG_BSP_SDH_SDCARD
+    PERIPHERAL_CLOCK_SDH_ENABLE();
+    GLB_AHB_MCU_Software_Reset(GLB_AHB_MCU_SW_EXT_SDH);
+#endif
+
   GLB_Set_USB_CLK_From_WIFIPLL(1);
   GLB_Swap_MCU_SPI_0_MOSI_With_MISO(0);
+}
+
+static void bflb_init_psram_gpio(void)
+{
+    struct bflb_device_s *gpio;
+
+    gpio = bflb_device_get_by_name("gpio");
+    for (uint8_t i = 0; i < 12; i++) {
+        bflb_gpio_init(gpio, (41 + i), GPIO_INPUT | GPIO_FLOAT | GPIO_SMT_EN | GPIO_DRV_0);
+    }
+}
+
+static void psram_winbond_default_init(void)
+{
+    PSRAM_Ctrl_Cfg_Type default_psram_ctrl_cfg = {
+        .vendor = PSRAM_CTRL_VENDOR_WINBOND,
+        .ioMode = PSRAM_CTRL_X8_MODE,
+        .size = PSRAM_SIZE_4MB,
+        .dqs_delay = 0xfff0,
+    };
+
+    PSRAM_Winbond_Cfg_Type default_winbond_cfg = {
+        .rst = DISABLE,
+        .clockType = PSRAM_CLOCK_DIFF,
+        .inputPowerDownMode = DISABLE,
+        .hybridSleepMode = DISABLE,
+        .linear_dis = ENABLE,
+        .PASR = PSRAM_PARTIAL_REFRESH_FULL,
+        .disDeepPowerDownMode = ENABLE,
+        .fixedLatency = DISABLE,
+        .brustLen = PSRAM_WINBOND_BURST_LENGTH_64_BYTES,
+        .brustType = PSRAM_WRAPPED_BURST,
+        .latency = PSRAM_WINBOND_6_CLOCKS_LATENCY,
+        .driveStrength = PSRAM_WINBOND_DRIVE_STRENGTH_35_OHMS_FOR_4M_115_OHMS_FOR_8M,
+    };
+
+    PSram_Ctrl_Init(PSRAM0_ID, &default_psram_ctrl_cfg);
+    // PSram_Ctrl_Winbond_Reset(PSRAM0_ID);
+    PSram_Ctrl_Winbond_Write_Reg(PSRAM0_ID, PSRAM_WINBOND_REG_CR0, &default_winbond_cfg);
 }
 
 static const char* bl_sys_version(const char ***ctx)
@@ -690,7 +741,7 @@ static void console_init() {
   bflb_gpio_uart_init(gpio, GPIO_PIN_21, GPIO_UART_FUNC_UART0_TX);
   bflb_gpio_uart_init(gpio, GPIO_PIN_22, GPIO_UART_FUNC_UART0_RX);
   
-  struct bflb_uart_config_s cfg;
+  struct bflb_uart_config_s cfg = {0};
   cfg.baudrate = CONSOLE_BAUDRATE;
   cfg.data_bits = UART_DATA_BITS_8;
   cfg.stop_bits = UART_STOP_BITS_1;
@@ -712,7 +763,7 @@ static void mn_board_init(void) {
     size_t heap_len;
 
     flag = bflb_irq_save();
-#ifndef CONFIG_PSRAM_COPY_CODE
+#ifndef CONFIG_BOARD_FLASH_INIT_SKIP
     ret = bflb_flash_init();
 #endif
     system_clock_init();
@@ -723,16 +774,39 @@ static void mn_board_init(void) {
 
     bl_show_log();
     bl_show_component_version();
+
+#ifdef CONFIG_PSRAM
+    static bflb_efuse_device_info_type device_info;
+
+    bflb_efuse_get_device_info(&device_info);
+    if (device_info.psram_info == 0) {
+        printf("This chip has no psram, please disable CONFIG_PSRAM\r\n");
+        while (1) {}
+    }
+
+    if (BL616_PSRAM_INIT_DONE == 0) {
+        board_psram_x8_init();
+        Tzc_Sec_PSRAMB_Access_Release();
+    }
+
+    heap_len = ((size_t)&__psram_limit - (size_t)&__psram_heap_base);
+    pmem_init((void *)&__psram_heap_base, heap_len);
+#endif
+
     heap_len = ((size_t)&__HeapLimit - (size_t)&__HeapBase);
     kmem_init((void *)&__HeapBase, heap_len);
 
-    bl_show_log();
     if (ret != 0) {
         printf("flash init fail!!!\r\n");
     }
     bl_show_flashinfo();
-
+#ifdef CONFIG_PSRAM
+    printf("dynamic memory init success, ocram heap size = %d Kbyte, psram heap size = %d Kbyte\r\n",
+           ((size_t)&__HeapLimit - (size_t)&__HeapBase) / 1024,
+           ((size_t)&__psram_limit - (size_t)&__psram_heap_base) / 1024);
+#else
     printf("dynamic memory init success, ocram heap size = %d Kbyte \r\n", ((size_t)&__HeapLimit - (size_t)&__HeapBase) / 1024);
+#endif
 
     printf("sig1:%08x\r\n", BL_RD_REG(GLB_BASE, GLB_UART_CFG1));
     printf("sig2:%08x\r\n", BL_RD_REG(GLB_BASE, GLB_UART_CFG2));
@@ -741,14 +815,13 @@ static void mn_board_init(void) {
     log_start();
 
 #if (defined(CONFIG_LUA) || defined(CONFIG_BFLOG) || defined(CONFIG_FATFS))
-    // we use FATFS ... so the RTC should be set ...    
-    // rtc = bflb_device_get_by_name("rtc");
+    rtc = bflb_device_get_by_name("rtc");
 #endif
 #ifdef CONFIG_MBEDTLS
     extern void bflb_sec_mutex_init(void);
     bflb_sec_mutex_init();
 #endif
-bflb_irq_restore(flag);
+    bflb_irq_restore(flag);
 }
 
 void mcu_hw_init(void) {
