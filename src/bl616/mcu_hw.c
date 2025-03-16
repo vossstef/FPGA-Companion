@@ -32,7 +32,37 @@ extern uint32_t __HeapLimit;
 #include "bflb_flash.h"
 #include "bflb_clock.h"
 
+// wifi
+#include "bflb_rtc.h"
+#include "bflb_acomp.h"
+#include "bflb_efuse.h"
+#include "board.h"
+#include "bl616_tzc_sec.h"
+#include "bl616_psram.h"
+
+#include "task.h"
+#include "timers.h"
+#include <lwip/tcpip.h>
+#include <lwip/sockets.h>
+#include <lwip/netdb.h>
+#include "bl_fw_api.h"
+#include "wifi_mgmr_ext.h"
+#include "wifi_mgmr.h"
+#include "bflb_irq.h"
+#include "rfparam_adapter.h"
+#include "board.h"
+
+#define DBG_TAG "MAIN"
+#include "log.h"
+
 static struct bflb_device_s *gpio;
+static TaskHandle_t wifi_fw_task;
+static wifi_conf_t conf = {
+    .country_code = "DE",
+};
+
+#define WIFI_STACK_SIZE  (1536)
+#define TASK_PRIORITY_FW (16)
 
 /* ============================================================================================= */
 /* ===============                          USB                                   ============== */
@@ -630,6 +660,27 @@ static void peripheral_clock_init(void) {
   GLB_Swap_MCU_SPI_0_MOSI_With_MISO(0);
 }
 
+static const char* bl_sys_version(const char ***ctx)
+{
+    extern uint8_t _version_info_section_start;
+    extern uint8_t _version_info_section_end;
+    const char ** const version_section_start = (const char**)&_version_info_section_start;
+    const char ** const version_section_end = (const char**)&_version_info_section_end;
+    const char *version_str;
+
+    //init
+    if (NULL == (*ctx)) {
+        (*ctx) = version_section_start;
+    }
+    //check the end
+    if (version_section_end == (*ctx)) {
+        return NULL;
+    }
+    version_str = (**ctx);
+    *ctx = (*ctx) + 1;
+    return version_str;
+}
+
 static void console_init() {
   struct bflb_device_s *gpio;
   
@@ -670,6 +721,8 @@ static void mn_board_init(void) {
 
     console_init();
 
+    bl_show_log();
+    bl_show_component_version();
     heap_len = ((size_t)&__HeapLimit - (size_t)&__HeapBase);
     kmem_init((void *)&__HeapBase, heap_len);
 
@@ -691,7 +744,11 @@ static void mn_board_init(void) {
     // we use FATFS ... so the RTC should be set ...    
     // rtc = bflb_device_get_by_name("rtc");
 #endif
-    bflb_irq_restore(flag);
+#ifdef CONFIG_MBEDTLS
+    extern void bflb_sec_mutex_init(void);
+    bflb_sec_mutex_init();
+#endif
+bflb_irq_restore(flag);
 }
 
 void mcu_hw_init(void) {
@@ -715,6 +772,15 @@ void mcu_hw_init(void) {
 
   uart0 = bflb_device_get_by_name("uart0");
   shell_init_with_task(uart0);
+
+  if (0 != rfparam_init(0, NULL, 0)) {
+    LOG_I("PHY RF init failed!\r\n");
+  }
+
+  LOG_I("PHY RF init success!\r\n");
+
+  tcpip_init(NULL, NULL);
+  wifi_start_firmware_task();
 
   usb_host();
 }
@@ -740,11 +806,74 @@ void mcu_hw_main_loop(void) {
   for( ;; );
 }
 
-
-int shell_test(int argc, char **argv)
-{
-    printf("shell\r\n");
-    return 0;
-}
-SHELL_CMD_EXPORT_ALIAS(shell_test, test, shell test.);
 SHELL_CMD_EXPORT_ALIAS(lsusb, lsusb, ls usb);
+
+
+/****************************************************************************
+ * Functions
+ ****************************************************************************/
+
+ int wifi_start_firmware_task(void)
+ {
+     LOG_I("Starting wifi ...\r\n");
+ 
+     /* enable wifi clock */
+ 
+     GLB_PER_Clock_UnGate(GLB_AHB_CLOCK_IP_WIFI_PHY | GLB_AHB_CLOCK_IP_WIFI_MAC_PHY | GLB_AHB_CLOCK_IP_WIFI_PLATFORM);
+     GLB_AHB_MCU_Software_Reset(GLB_AHB_MCU_SW_WIFI);
+ 
+     /* Enable wifi irq */
+ 
+     extern void interrupt0_handler(void);
+     bflb_irq_attach(WIFI_IRQn, (irq_callback)interrupt0_handler, NULL);
+     bflb_irq_enable(WIFI_IRQn);
+ 
+     xTaskCreate(wifi_main, (char *)"fw", WIFI_STACK_SIZE, NULL, TASK_PRIORITY_FW, &wifi_fw_task);
+ 
+     return 0;
+ }
+ 
+ void wifi_event_handler(uint32_t code)
+ {
+     switch (code) {
+         case CODE_WIFI_ON_INIT_DONE: {
+             LOG_I("[APP] [EVT] %s, CODE_WIFI_ON_INIT_DONE\r\n", __func__);
+             wifi_mgmr_init(&conf);
+         } break;
+         case CODE_WIFI_ON_MGMR_DONE: {
+             LOG_I("[APP] [EVT] %s, CODE_WIFI_ON_MGMR_DONE\r\n", __func__);
+         } break;
+         case CODE_WIFI_ON_SCAN_DONE: {
+             LOG_I("[APP] [EVT] %s, CODE_WIFI_ON_SCAN_DONE\r\n", __func__);
+             wifi_mgmr_sta_scanlist();
+         } break;
+         case CODE_WIFI_ON_CONNECTED: {
+             LOG_I("[APP] [EVT] %s, CODE_WIFI_ON_CONNECTED\r\n", __func__);
+             void mm_sec_keydump();
+             mm_sec_keydump();
+         } break;
+         case CODE_WIFI_ON_GOT_IP: {
+             LOG_I("[APP] [EVT] %s, CODE_WIFI_ON_GOT_IP\r\n", __func__);
+             LOG_I("[SYS] Memory left is %d Bytes\r\n", kfree_size());
+         } break;
+         case CODE_WIFI_ON_DISCONNECT: {
+             LOG_I("[APP] [EVT] %s, CODE_WIFI_ON_DISCONNECT\r\n", __func__);
+         } break;
+         case CODE_WIFI_ON_AP_STARTED: {
+             LOG_I("[APP] [EVT] %s, CODE_WIFI_ON_AP_STARTED\r\n", __func__);
+         } break;
+         case CODE_WIFI_ON_AP_STOPPED: {
+             LOG_I("[APP] [EVT] %s, CODE_WIFI_ON_AP_STOPPED\r\n", __func__);
+         } break;
+         case CODE_WIFI_ON_AP_STA_ADD: {
+             LOG_I("[APP] [EVT] [AP] [ADD] %lld\r\n", xTaskGetTickCount());
+         } break;
+         case CODE_WIFI_ON_AP_STA_DEL: {
+             LOG_I("[APP] [EVT] [AP] [DEL] %lld\r\n", xTaskGetTickCount());
+         } break;
+         default: {
+             LOG_I("[APP] [EVT] Unknown code %u \r\n", code);
+         }
+     }
+ }
+ 

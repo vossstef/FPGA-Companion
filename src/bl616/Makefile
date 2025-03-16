@@ -10,6 +10,9 @@ CHIP ?= bl616
 BOARD ?= bl616dk -DCMAKE_C_FLAGS="-DM0S_DOCK=1"
 CROSS_COMPILE ?= riscv64-unknown-elf-
 
+# add custom cmake definition
+#cmake_definition+=-Dxxx=sss
+
 include $(BL_SDK_BASE)/project.build
 
 term:
