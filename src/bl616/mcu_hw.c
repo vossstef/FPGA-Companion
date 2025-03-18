@@ -351,27 +351,53 @@ static void usbh_hid_client_thread(void *argument) {
   }
 }
 
+// from fixcontroler.py: https://gist.github.com/adnanh/f60f069fc9185a48b73db9987b9e9108
+struct usb_setup_packet xbox_init_packets[5] = {
+  {0x80, 0x06, 0x0302, 0x0409, 2},        // get string descriptor (SN30pro needs this)
+  {0x80, 0x06, 0x0302, 0x0409, 32},       // get string descriptor
+  {0xC1, 0x01, 0x0100, 0x0000, 20},       // control transfer 1 (a lot of pads need this)
+  {0xC1, 0x01, 0x0000, 0x0000, 8},        // control transfer 2
+  /* {0xC0, 0x01, 0x0100, 0x0000, 4}*/};  // skipped as 8bitdo wireless adapter hangs on this
+
+// four data packets to EP2
+uint8_t xbox_ep2_packets[4][3] = {{0x01, 0x03, 0x02}, {0x02, 0x08, 0x03}, 
+                                {0x01, 0x03, 0x02}, {0x01, 0x03, 0x06}};
+
+static void xbox_init(struct xbox_info_S *xbox) {
+  for (int i = 0; i < 4; i++) {
+      usbh_bulk_urb_fill(&xbox->class->intout_urb,
+          xbox->class->hport,
+          xbox->class->intout,
+          xbox_ep2_packets[i], 3,
+          0, usbh_xbox_callback, xbox);
+      int ret = usbh_submit_urb(&xbox->class->intout_urb);
+      if (ret < 0)
+      usb_debugf("XBOX FATAL: submit EP2 failed %d", ret);
+      else
+          xSemaphoreTake(xbox->sem, 0xffffffffUL);    // wait for callback to finish
+  }
+}
+
 // ... and XBOX clients as well
 static void usbh_xbox_client_thread(void *argument) {
   struct xbox_info_S *xbox = (struct xbox_info_S *)argument;
-  uint8_t xbox360_wired_led[] = {0x01, 0x03, 0x00};
+  int ret = 0;
 
   usb_debugf("XBOX client #%d: thread started", xbox->index);
 
-	usbh_bulk_urb_fill(&xbox->class->intout_urb,
-    xbox->class->hport,
-    xbox->class->intout,
-    xbox360_wired_led,
-    sizeof(xbox360_wired_led),
-    0xfffffff, 
-    NULL,
-    NULL);
+    // Send initialization packets
+    for (int i = 0; i < CONFIG_USBHOST_MAX_XBOX_CLASS; i++) {
+      if ((ret = usbh_control_transfer(xbox->class->hport, &xbox_init_packets[i], xbox->buffer)) < 0) {
+        usb_debugf("XBOX: init packet %d failed: %d", i, ret);
+      }
+  }
+  xbox_init(xbox);
+  usb_debugf("XBOX client #%d: all init packets sent, entering main loop.\n", xbox->index);
 
-  int ret = usbh_submit_urb(&xbox->class->intout_urb);
-  if (ret < 0)
-    usb_debugf("xbox set_led failed\r\n");
-  else
-    usb_debugf("xbox set_led sucess\r\n");
+    // setup urb
+    usbh_int_urb_fill(&xbox->class->intin_urb, xbox->class->hport, 
+      xbox->class->intin, xbox->buffer, XBOX_REPORT_SIZE,
+      50, usbh_xbox_callback, xbox);
 
   while(1) {
     int ret = usbh_submit_urb(&xbox->class->intin_urb);
