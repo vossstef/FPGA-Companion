@@ -98,6 +98,8 @@ static struct bflb_device_s *rtc;
 
 extern struct bflb_device_s *gpio;
 extern void shell_init_with_task(struct bflb_device_s *shell);
+void bl_show_component_version(void);
+int wifi_start_firmware_task(void);
 
 void set_led(int pin, int on) {
   // only M0S dock has those leds
@@ -189,9 +191,15 @@ static void usbh_update(struct usb_config *usb) {
       int rep_desc = usbh_hid_get_report_descriptor(usb->hid_info[i].class, report_desc[i], 128);
       if (rep_desc < 0) {
         usb_debugf("usbh_hid_get_report_descriptor issue");}
+      bool skip = false;
+      uint16_t vendor_id = usb->hid_info[i].class->hport->device_desc.idVendor;
+      uint16_t product_id = usb->hid_info[i].class->hport->device_desc.idProduct;
+      if (vendor_id == 0x2dc8 && product_id == 0x3107) {  // 8bitdo wireless adapter
+          skip = true;
+      }
       // parse report descriptor ...
       usb_debugf("report descriptor: %p", report_desc[i]);
-      if(!parse_report_descriptor(report_desc[i], 128, &usb->hid_info[i].report, NULL)) {
+      if(skip || !parse_report_descriptor(report_desc[i], 128, &usb->hid_info[i].report, NULL)) {
 	usb->hid_info[i].state = STATE_FAILED;   // parsing failed, don't use
 	return;
       }
@@ -361,7 +369,7 @@ struct usb_setup_packet xbox_init_packets[5] = {
 
 // four data packets to EP2
 uint8_t xbox_ep2_packets[4][3] = {{0x01, 0x03, 0x02}, {0x02, 0x08, 0x03}, 
-                                {0x01, 0x03, 0x02}, {0x01, 0x03, 0x06}};
+                                  {0x01, 0x03, 0x02}, {0x01, 0x03, 0x06}};
 
 static void xbox_init(struct xbox_info_S *xbox) {
   for (int i = 0; i < 4; i++) {
@@ -735,27 +743,6 @@ static void psram_winbond_default_init(void)
     PSram_Ctrl_Init(PSRAM0_ID, &default_psram_ctrl_cfg);
     // PSram_Ctrl_Winbond_Reset(PSRAM0_ID);
     PSram_Ctrl_Winbond_Write_Reg(PSRAM0_ID, PSRAM_WINBOND_REG_CR0, &default_winbond_cfg);
-}
-
-static const char* bl_sys_version(const char ***ctx)
-{
-    extern uint8_t _version_info_section_start;
-    extern uint8_t _version_info_section_end;
-    const char ** const version_section_start = (const char**)&_version_info_section_start;
-    const char ** const version_section_end = (const char**)&_version_info_section_end;
-    const char *version_str;
-
-    //init
-    if (NULL == (*ctx)) {
-        (*ctx) = version_section_start;
-    }
-    //check the end
-    if (version_section_end == (*ctx)) {
-        return NULL;
-    }
-    version_str = (**ctx);
-    *ctx = (*ctx) + 1;
-    return version_str;
 }
 
 static void console_init() {
