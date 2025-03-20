@@ -2,6 +2,17 @@ cmake_minimum_required(VERSION 3.15)
 
 include(proj.conf)
 
+# optionally enabled wifi support
+set(ENABLE_WIFI 0) 
+
+if(ENABLE_WIFI)
+set(CONFIG_LWIP 1)
+set(CONFIG_WIFI6 1)
+set(CONFIG_RF 1)
+set(CONFIG_MBEDTLS 1)
+set(CONFIG_DHCPD 1)
+endif(ENABLE_WIFI)
+
 find_package(bouffalo_sdk REQUIRED HINTS $ENV{BL_SDK_BASE})
 
 sdk_add_include_directories(. ../u8g2/csrc)
@@ -25,6 +36,7 @@ target_sources(app PRIVATE
    	../sysctrl.c
    	../config.c
    	../xml.c
+        ../at_wifi.c
 )
 
 file(GLOB COMPONENT_SRCS ../u8g2/csrc/*.c  ../u8g2/sys/bitmap/common/*.c)
